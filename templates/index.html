@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>nata - not another todo app</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        /* 页面基本样式设置 */
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 20px; 
+        }
+        h1 { 
+            color: #333; 
+            text-align: center;
+        }
+        form { 
+            margin-bottom: 20px; 
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .form-row {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"] { 
+            flex: 1;
+            padding: 10px; 
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        input[type="datetime-local"] {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button { 
+            padding: 10px 15px; 
+            background: #4CAF50; 
+            color: white; 
+            border: none; 
+            cursor: pointer; 
+            border-radius: 4px;
+        }
+        button:hover { 
+            background: #45a049; 
+        }
+        ul { 
+            list-style-type: none; 
+            padding: 0; 
+        }
+        li { 
+            padding: 15px; 
+            border-bottom: 1px solid #ddd; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center;
+        }
+        .completed { 
+            text-decoration: line-through; 
+            color: #888; 
+        }
+        .delete-btn { 
+            background: #f44336; 
+            padding: 5px 10px; 
+        }
+        .toggle-btn { 
+            background: #ff9800; 
+            padding: 5px 10px; 
+        }
+        .actions {
+            display: flex;
+            gap: 5px;
+        }
+        /* 任务到期提醒样式 */
+        .due-date {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 5px;
+        }
+        /* 二维码和网络信息样式 */
+        .network-info {
+            background-color: #f0f8ff;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .qr-code {
+            margin: 10px auto;
+            display: block;
+        }
+        .ip-address {
+            font-weight: bold;
+            color: #0066cc;
+            font-size: 18px;
+            margin: 10px 0;
+        }
+        .loading {
+            color: #666;
+            font-style: italic;
+        }
+        /* 自定义确认对话框样式 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 400px;
+            border-radius: 5px;
+        }
+        .modal-buttons {
+            margin-top: 20px;
+            text-align: right;
+        }
+        .modal-buttons button {
+            margin-left: 10px;
+        }
+        .cancel-btn {
+            background-color: #ccc;
+        }
+    </style>
+</head>
+<body>
+    <h1>📝 nata - not another todo app</h1>
+    
+    <!-- 网络信息和二维码 -->
+    <div class="network-info">
+        <h3>📱 手机访问</h3>
+        <p>在同一网络下，使用手机扫描下方二维码可直接访问</p>
+        <img class="qr-code" id="qrCode" src="" alt="QR Code" width="200" height="200">
+        <p>或在浏览器中输入地址:</p>
+        <div class="ip-address" id="ipAddress">加载中...</div>
+    </div>
+    
+    <!-- 添加任务表单 -->
+    <form id="taskForm">
+        <input type="text" id="taskInput" placeholder="输入新任务" required>
+        <div class="form-row">
+            <input type="datetime-local" id="dueDateInput">
+            <button type="submit">➕ 添加</button>
+        </div>
+    </form>
+    
+    <!-- 任务列表容器 -->
+    <ul id="taskList"></ul>
+    
+    <!-- 删除确认对话框 -->
+    <div id="deleteModal" class="modal">
+        <div class="modal-content">
+            <p>确定要删除这个任务吗？</p>
+            <div class="modal-buttons">
+                <button class="cancel-btn" id="cancelDelete">取消</button>
+                <button class="delete-btn" id="confirmDelete">删除</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 当前要删除的任务ID
+        let currentTaskId = null;
+        
+        /**
+         * 获取并更新网络信息和二维码
+         */
+        async function updateNetworkInfo() {
+            try {
+                // 发送请求到新的API端点获取当前网络信息
+                const response = await fetch('/api/network-info');
+                const data = await response.json();
+                
+                // 更新二维码
+                document.getElementById('qrCode').src = 'data:image/png;base64,' + data.qr_code;
+                
+                // 更新IP地址和端口
+                document.getElementById('ipAddress').textContent = data.local_ip + ':' + data.port;
+            } catch (error) {
+                console.error('更新网络信息失败:', error);
+                document.getElementById('ipAddress').textContent = '获取信息失败';
+            }
+        }
+        
+        /**
+         * 定期更新网络信息（每10秒一次）
+         */
+        setInterval(updateNetworkInfo, 10000);
+        
+        /**
+         * 格式化日期时间显示
+         */
+        function formatDateTime(dateString) {
+            if (!dateString) return '';
+            const date = new Date(dateString);
+            return date.toLocaleString('zh-CN');
+        }
+        
+        /**
+         * 根据到期时间计算背景颜色
+         * 7天外是纯白，逐渐变红直到过期
+         */
+        function calculateBackgroundColor(dueDate) {
+            if (!dueDate) return ''; // 没有设置到期时间则返回默认背景
+            
+            const now = new Date();
+            const due = new Date(dueDate);
+            const diffHours = (due - now) / (1000 * 60 * 60); // 距离到期的小时数
+            const diffDays = diffHours / 24; // 距离到期的天数
+            
+            // 7天外是纯白
+            if (diffDays > 7) {
+                return '';
+            }
+            
+            // 已过期，返回深红色
+            if (diffHours < 0) {
+                return 'rgb(255, 200, 200)'; // 浅红色
+            }
+            
+            // 计算颜色渐变 (从白色到红色)
+            // 7天内逐渐变红，红色分量从255增加到255，绿色和蓝色分量从255减少到200
+            const intensity = Math.max(0, Math.min(1, 1 - (diffDays / 7))); // 0到1之间的值
+            const red = 255;
+            const green = Math.floor(255 - (55 * intensity)); // 从255逐渐减少到200
+            const blue = Math.floor(255 - (55 * intensity));  // 从255逐渐减少到200
+            
+            return `rgb(${red}, ${green}, ${blue})`;
+        }
+        
+        /**
+         * 从服务器加载所有任务并显示在页面上
+         */
+        async function loadTasks() {
+            try {
+                const response = await fetch('/api/tasks');
+                const tasks = await response.json();
+                const list = document.getElementById('taskList');
+                
+                // 如果没有任务，显示提示信息
+                if (tasks.length === 0) {
+                    list.innerHTML = '<p style="text-align: center; color: #888;">暂无任务，添加一个新任务开始吧！</p>';
+                    return;
+                }
+                
+                // 渲染任务列表
+                list.innerHTML = tasks.map(task => {
+                    const backgroundColor = calculateBackgroundColor(task.due_date);
+                    const style = backgroundColor ? `style="background-color: ${backgroundColor};"` : '';
+                    
+                    return `
+                    <li ${style}>
+                        <div>
+                            <span class="${task.completed ? 'completed' : ''}" onclick="toggleTask(${task.id})">
+                                ${task.title}
+                            </span>
+                            ${task.due_date ? `<div class="due-date">到期时间: ${formatDateTime(task.due_date)}</div>` : ''}
+                        </div>
+                        <div class="actions">
+                            <button class="toggle-btn" onclick="toggleTask(${task.id})">
+                                ${task.completed ? '↩️ 撤销' : '✅ 完成'}
+                            </button>
+                            <button class="delete-btn" data-id="${task.id}">🗑️ 删除</button>
+                        </div>
+                    </li>
+                `}).join('');
+                
+                // 为所有删除按钮添加事件监听器
+                document.querySelectorAll('.delete-btn').forEach(button => {
+                    button.addEventListener('click', function() {
+                        const taskId = this.getAttribute('data-id');
+                        showDeleteConfirm(taskId);
+                    });
+                });
+            } catch (error) {
+                console.error('加载任务失败:', error);
+                document.getElementById('taskList').innerHTML = '<p style="color: red;">加载任务失败，请刷新页面重试</p>';
+            }
+        }
+        
+        /**
+         * 显示删除确认对话框
+         */
+        function showDeleteConfirm(taskId) {
+            currentTaskId = taskId;
+            document.getElementById('deleteModal').style.display = 'block';
+        }
+        
+        /**
+         * 隐藏删除确认对话框
+         */
+        function hideDeleteConfirm() {
+            document.getElementById('deleteModal').style.display = 'none';
+            currentTaskId = null;
+        }
+        
+        /**
+         * 添加新任务
+         */
+        document.getElementById('taskForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const title = document.getElementById('taskInput').value.trim();
+            const dueDate = document.getElementById('dueDateInput').value;
+            
+            // 检查任务标题是否为空
+            if (!title) {
+                alert('请输入任务内容');
+                return;
+            }
+            
+            try {
+                // 准备请求数据
+                const requestData = {title: title};
+                if (dueDate) {
+                    // 转换为标准格式
+                    requestData.due_date = new Date(dueDate).toISOString().slice(0, 19).replace('T', ' ');
+                }
+                
+                // 发送POST请求添加新任务
+                await fetch('/api/tasks', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(requestData)
+                });
+                
+                // 清空输入框并重新加载任务列表
+                this.reset();
+                loadTasks();
+            } catch (error) {
+                console.error('添加任务失败:', error);
+                alert('添加任务失败，请重试');
+            }
+        });
+        
+        /**
+         * 切换任务完成状态
+         * @param {number} id - 任务ID
+         */
+        async function toggleTask(id) {
+            console.log('切换任务状态，任务ID:', id);
+            try {
+                const response = await fetch(`/api/tasks/${id}/toggle`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                
+                if (response.ok) {
+                    loadTasks();
+                } else {
+                    const errorData = await response.json();
+                    console.error('切换任务状态失败:', errorData.error);
+                    alert('切换任务状态失败: ' + errorData.error);
+                }
+            } catch (error) {
+                console.error('切换任务状态失败:', error);
+                alert('切换任务状态失败，请重试');
+            }
+        }
+        
+        /**
+         * 删除任务
+         */
+        async function deleteTask() {
+            if (!currentTaskId) return;
+            
+            console.log('尝试删除任务，任务ID:', currentTaskId);
+            try {
+                const response = await fetch(`/api/tasks/${currentTaskId}`, {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                
+                console.log('删除请求响应状态:', response.status);
+                
+                if (response.ok) {
+                    console.log('任务删除成功');
+                    hideDeleteConfirm();
+                    loadTasks();
+                } else {
+                    const errorData = await response.json();
+                    console.error('删除任务失败:', errorData.error);
+                    alert('删除任务失败: ' + errorData.error);
+                }
+            } catch (error) {
+                console.error('删除任务失败:', error);
+                alert('删除任务失败，请重试');
+            }
+        }
+        
+        // 绑定删除确认对话框的按钮事件
+        document.getElementById('confirmDelete').addEventListener('click', deleteTask);
+        document.getElementById('cancelDelete').addEventListener('click', hideDeleteConfirm);
+        
+        // 点击模态框外部区域关闭对话框
+        window.addEventListener('click', function(event) {
+            const modal = document.getElementById('deleteModal');
+            if (event.target === modal) {
+                hideDeleteConfirm();
+            }
+        });
+        
+        // 页面加载完成后初始化任务列表和网络信息
+        document.addEventListener('DOMContentLoaded', function() {
+            loadTasks();
+            updateNetworkInfo(); // 初始加载网络信息
+        });
+    </script>
+</body>
+</html>
