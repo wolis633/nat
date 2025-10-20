@@ -4,6 +4,7 @@ nata - not another todo app
 支持添加、删除、标记完成/未完成任务等功能
 """
 
+import webbrowser
 from flask import Flask, request, jsonify, render_template
 import sqlite3
 import os
@@ -15,6 +16,34 @@ import logging
 from datetime import datetime, timedelta
 import subprocess
 import signal
+from collections import deque
+import json
+
+# 创建一个循环缓冲区来存储最近的日志
+class LogBuffer:
+    def __init__(self, maxlen=100):
+        self.buffer = deque(maxlen=maxlen)
+    
+    def add_log(self, level, message):
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_entry = {
+            'timestamp': timestamp,
+            'level': level,
+            'message': message
+        }
+        self.buffer.append(log_entry)
+    
+    def get_logs(self):
+        return list(self.buffer)
+
+# 创建全局日志缓冲区
+log_buffer = LogBuffer()
+
+# 自定义日志处理器
+class BufferHandler(logging.Handler):
+    def emit(self, record):
+        log_entry = self.format(record)
+        log_buffer.add_log(record.levelname, log_entry)
 
 # 创建Flask应用实例
 app = Flask(__name__)
@@ -22,6 +51,16 @@ app = Flask(__name__)
 DB_NAME = 'todos.db'
 # 定义端口号
 PORT = 12345
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+buffer_handler = BufferHandler()
+buffer_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+buffer_handler.setFormatter(formatter)
+logger.addHandler(buffer_handler)
+app.logger.addHandler(buffer_handler)
 
 # 获取本机内网IP地址
 def get_local_ip():
@@ -156,6 +195,8 @@ def get_tasks():
     获取所有任务
     返回所有任务的JSON数组，按到期时间排序（未设置到期时间的任务排在最后）
     """
+    app.logger.info("获取所有任务列表")
+    
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -173,6 +214,8 @@ ORDER BY
     cursor.execute(select_query)
     tasks = [dict(row) for row in cursor.fetchall()]
     conn.close()
+    
+    app.logger.info(f"成功获取 {len(tasks)} 个任务")
     return jsonify(tasks)
 
 # 添加新任务的API接口
@@ -187,8 +230,12 @@ def add_task():
     title = data.get('title', '').strip()
     due_date = data.get('due_date', None)
     
+    # 记录日志
+    app.logger.info(f"尝试添加新任务: {title}")
+    
     # 验证任务标题
     if not title:
+        app.logger.warning("添加任务失败: 任务标题为空")
         return jsonify({'error': '任务标题不能为空'}), 400
     
     # 插入新任务到数据库
@@ -202,6 +249,9 @@ VALUES (?, ?)'''
     conn.commit()
     task_id = cursor.lastrowid
     conn.close()
+    
+    # 记录成功日志
+    app.logger.info(f"成功添加任务 ID: {task_id}, 标题: {title}")
     
     # 返回新创建的任务信息
     return jsonify({
@@ -218,6 +268,8 @@ def delete_task(task_id):
     根据任务ID删除指定任务
     成功删除返回状态码204 (无内容)
     """
+    app.logger.info(f"尝试删除任务 ID: {task_id}")
+    
     conn = None
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -227,6 +279,7 @@ def delete_task(task_id):
         task = cursor.fetchone()
         
         if task is None:
+            app.logger.warning(f"删除任务失败: 任务 ID {task_id} 不存在")
             conn.close()
             return jsonify({'error': '任务不存在'}), 404
         
@@ -237,12 +290,15 @@ def delete_task(task_id):
         cursor.execute(delete_query, (task_id,))
         conn.commit()
         conn.close()
+        
+        # 记录成功日志
+        app.logger.info(f"成功删除任务 ID: {task_id}")
         return '', 204
     except Exception as e:
         # 记录错误并返回
         if conn:
             conn.close()
-        app.logger.error('删除任务失败: %s', str(e))
+        app.logger.error(f'删除任务失败: {str(e)}')
         return jsonify({'error': '删除任务失败: ' + str(e)}), 500
 
 # 切换任务完成状态的API接口
@@ -252,6 +308,8 @@ def toggle_task(task_id):
     切换指定任务的完成状态
     成功切换返回状态码204 (无内容)
     """
+    app.logger.info(f"尝试切换任务状态 ID: {task_id}")
+    
     conn = None
     try:
         conn = sqlite3.connect(DB_NAME)
@@ -264,6 +322,7 @@ WHERE id = ?'''
         cursor.execute(select_query, (task_id,))
         task = cursor.fetchone()
         if task is None:
+            app.logger.warning(f"切换任务状态失败: 任务 ID {task_id} 不存在")
             conn.close()
             return jsonify({'error': '任务不存在'}), 404
         
@@ -277,13 +336,26 @@ WHERE id = ?'''
         cursor.execute(update_query, (new_status, task_id))
         conn.commit()
         conn.close()
+        
+        # 记录成功日志
+        status_text = "完成" if new_status else "未完成"
+        app.logger.info(f"成功切换任务 ID: {task_id} 状态为: {status_text}")
         return '', 204
     except Exception as e:
         # 记录错误并返回
         if conn:
             conn.close()
-        app.logger.error('切换任务状态失败: %s', str(e))
+        app.logger.error(f'切换任务状态失败: {str(e)}')
         return jsonify({'error': '切换任务状态失败: ' + str(e)}), 500
+
+# 获取日志的API接口
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    """
+    获取应用日志
+    返回最近的日志条目
+    """
+    return jsonify(log_buffer.get_logs())
 
 # 应用入口点
 if __name__ == '__main__':
@@ -300,4 +372,6 @@ if __name__ == '__main__':
     init_db()
     
     # 启动应用（禁用调试模式避免重启问题）
+    # 在新线程中启动浏览器，避免阻塞应用启动
+    webbrowser.open(f'http://localhost:{PORT}')
     app.run(host='0.0.0.0', port=PORT, debug=False)

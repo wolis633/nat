@@ -134,6 +134,64 @@
         .cancel-btn {
             background-color: #ccc;
         }
+        
+        /* 调试面板样式 */
+        .debug-panel {
+            margin-top: 20px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        
+        .debug-header {
+            background-color: #eee;
+            padding: 10px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .debug-content {
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            display: none;
+        }
+        
+        .debug-content.open {
+            display: block;
+        }
+        
+        .log-entry {
+            margin: 5px 0;
+            padding: 2px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .log-timestamp {
+            color: #666;
+        }
+        
+        .log-level {
+            display: inline-block;
+            width: 70px;
+            font-weight: bold;
+        }
+        
+        .log-level-INFO {
+            color: #0066cc;
+        }
+        
+        .log-level-WARNING {
+            color: #ff9900;
+        }
+        
+        .log-level-ERROR {
+            color: #cc0000;
+        }
     </style>
 </head>
 <body>
@@ -170,10 +228,78 @@
             </div>
         </div>
     </div>
+    
+    <!-- 调试面板 -->
+    <div class="debug-panel">
+        <div class="debug-header" id="debugHeader">
+            <span>应用查看日志</span>
+            <span>▼</span>
+        </div>
+        <div class="debug-content" id="debugContent">
+            <div id="logEntries">加载日志中...</div>
+        </div>
+    </div>
 
     <script>
         // 当前要删除的任务ID
         let currentTaskId = null;
+        
+        // 调试面板状态
+        let debugPanelOpen = false;
+        
+        /**
+         * 获取并显示应用日志
+         */
+        async function loadLogs() {
+            try {
+                const response = await fetch('/api/logs');
+                const logs = await response.json();
+                
+                const logEntriesElement = document.getElementById('logEntries');
+                if (logs.length === 0) {
+                    logEntriesElement.innerHTML = '<p>暂无日志</p>';
+                    return;
+                }
+                
+                logEntriesElement.innerHTML = logs.map(log => `
+                    <div class="log-entry">
+                        <span class="log-timestamp">${log.timestamp}</span>
+                        <span class="log-level log-level-${log.level}">${log.level}</span>
+                        <span class="log-message">${log.message}</span>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('加载日志失败:', error);
+            }
+        }
+        
+        /**
+         * 切换调试面板显示状态
+         */
+        function toggleDebugPanel() {
+            debugPanelOpen = !debugPanelOpen;
+            const content = document.getElementById('debugContent');
+            const header = document.getElementById('debugHeader');
+            
+            if (debugPanelOpen) {
+                content.classList.add('open');
+                header.querySelector('span:last-child').textContent = '▲';
+                loadLogs(); // 打开时加载日志
+            } else {
+                content.classList.remove('open');
+                header.querySelector('span:last-child').textContent = '▼';
+            }
+        }
+        
+        // 绑定调试面板切换事件
+        document.getElementById('debugHeader').addEventListener('click', toggleDebugPanel);
+        
+        // 定期更新日志（每5秒）
+        setInterval(() => {
+            if (debugPanelOpen) {
+                loadLogs();
+            }
+        }, 5000);
         
         /**
          * 获取并更新网络信息和二维码
@@ -339,6 +465,11 @@
                 // 清空输入框并重新加载任务列表
                 this.reset();
                 loadTasks();
+                
+                // 如果调试面板打开，刷新日志
+                if (debugPanelOpen) {
+                    loadLogs();
+                }
             } catch (error) {
                 console.error('添加任务失败:', error);
                 alert('添加任务失败，请重试');
@@ -359,6 +490,11 @@
                 
                 if (response.ok) {
                     loadTasks();
+                    
+                    // 如果调试面板打开，刷新日志
+                    if (debugPanelOpen) {
+                        loadLogs();
+                    }
                 } else {
                     const errorData = await response.json();
                     console.error('切换任务状态失败:', errorData.error);
@@ -389,6 +525,11 @@
                     console.log('任务删除成功');
                     hideDeleteConfirm();
                     loadTasks();
+                    
+                    // 如果调试面板打开，刷新日志
+                    if (debugPanelOpen) {
+                        loadLogs();
+                    }
                 } else {
                     const errorData = await response.json();
                     console.error('删除任务失败:', errorData.error);
