@@ -9,6 +9,8 @@ from flask import Flask, request, jsonify, render_template, send_file
 import sqlite3
 import os
 import socket
+import argparse
+from pathlib import Path
 import qrcode
 from io import BytesIO
 import base64
@@ -47,12 +49,41 @@ class BufferHandler(logging.Handler):
         log_entry = self.format(record)
         log_buffer.add_log(record.levelname, log_entry)
 
+# 默认配置
+DEFAULT_DB_PATH = 'todos.db'
+DEFAULT_PORT = 12345
+
+def get_db_path():
+    """
+    获取数据库路径，优先级：
+    1. 命令行参数 --db-path
+    2. 环境变量 NATA_DB_PATH
+    3. 默认路径 'todos.db'
+    """
+    # 如果通过命令行参数设置了数据库路径
+    if hasattr(app, 'db_path'):
+        return app.db_path
+    
+    # 否则尝试从环境变量获取
+    return os.getenv('NATA_DB_PATH', DEFAULT_DB_PATH)
+
 # 创建Flask应用实例
 app = Flask(__name__)
-# 定义数据库文件名
-DB_NAME = 'todos.db'
-# 定义端口号
-PORT = 12345
+
+# 端口配置函数
+def get_port():
+    """
+    获取服务器端口，优先级：
+    1. 命令行参数 --port
+    2. 环境变量 NATA_PORT
+    3. 默认端口 12345
+    """
+    if hasattr(app, 'port'):
+        return app.port
+    return int(os.getenv('NATA_PORT', DEFAULT_PORT))
+
+# 定义初始端口号
+PORT = get_port()
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -136,7 +167,11 @@ def init_db():
     - created_at: 任务创建时间戳，默认为当前时间
     - due_date: 任务到期时间，可为空
     """
-    conn = sqlite3.connect(DB_NAME)
+    db_path = get_db_path()
+    # 确保数据库目录存在
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+    
+    conn = sqlite3.connect(db_path)
     
     # 检查tasks表是否存在due_date字段
     cursor = conn.cursor()
@@ -199,7 +234,7 @@ def get_tasks():
     """
     app.logger.info("获取所有任务列表")
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     # 查询所有任务，按到期时间排序（NULL值排在最后）
@@ -241,7 +276,7 @@ def add_task():
         return jsonify({'error': '任务标题不能为空'}), 400
     
     # 插入新任务到数据库
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(get_db_path())
     cursor = conn.cursor()
     # 插入新任务的SQL语句
     insert_query = '''
@@ -274,7 +309,7 @@ def delete_task(task_id):
     
     conn = None
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
         # 检查任务是否存在
         cursor.execute('SELECT id FROM tasks WHERE id = ?', (task_id,))
@@ -314,7 +349,7 @@ def toggle_task(task_id):
     
     conn = None
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
         # 查询指定ID任务当前状态的SQL语句
         select_query = '''
@@ -378,7 +413,7 @@ def batch_delete_tasks():
     
     conn = None
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
         
         # 检查任务是否存在
@@ -424,7 +459,7 @@ def export_tasks():
     
     conn = None
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(get_db_path())
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -530,7 +565,7 @@ def import_tasks():
             return jsonify({'error': 'tasks字段必须是列表'}), 400
         
         # 导入任务
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(get_db_path())
         cursor = conn.cursor()
         
         imported_count = 0
@@ -583,17 +618,43 @@ def import_tasks():
 if __name__ == '__main__':
     """
     程序入口点
-    1. 检查并终止占用端口的进程
-    2. 初始化数据库
-    3. 启动Flask开发服务器，监听所有网络接口的12345端口
+    1. 解析命令行参数
+    2. 检查并终止占用端口的进程
+    3. 初始化数据库
+    4. 启动Flask开发服务器，监听所有网络接口的指定端口
     """
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='nata - not another todo app')
+    parser.add_argument('--db-path', 
+                      type=str,
+                      help='数据库文件路径 (默认: todos.db，可通过环境变量 NATA_DB_PATH 设置)')
+    parser.add_argument('--port',
+                      type=int,
+                      help='服务器端口 (默认: 12345，可通过环境变量 NATA_PORT 设置)')
+    args = parser.parse_args()
+    
+    # 如果指定了数据库路径，设置到应用配置中
+    if args.db_path:
+        app.db_path = args.db_path
+        
+    # 如果指定了端口，设置到应用配置中
+    if args.port:
+        app.port = args.port
+    
+    # 获取最终使用的端口
+    port = get_port()
+    
     # 检查并终止占用端口的进程
-    kill_port_process(PORT)
+    kill_port_process(port)
     
     # 初始化数据库
     init_db()
     
+    # 记录配置信息
+    app.logger.info(f"使用数据库: {get_db_path()}")
+    app.logger.info(f"监听端口: {port}")
+    
     # 启动应用（禁用调试模式避免重启问题）
     # 在新线程中启动浏览器，避免阻塞应用启动
-    webbrowser.open(f'http://localhost:{PORT}')
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    webbrowser.open(f'http://localhost:{port}')
+    app.run(host='0.0.0.0', port=port, debug=False)
