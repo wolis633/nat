@@ -192,6 +192,107 @@
         .log-level-ERROR {
             color: #cc0000;
         }
+        
+        /* 批量操作样式 */
+        .batch-controls {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f5f5f5;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        .batch-controls.show {
+            display: block;
+        }
+        
+        .batch-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .batch-btn {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .batch-delete-btn {
+            background-color: #f44336;
+            color: white;
+        }
+        
+        .batch-export-btn {
+            background-color: #2196F3;
+            color: white;
+        }
+        
+        .batch-btn:hover {
+            opacity: 0.8;
+        }
+        
+        .batch-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        
+        /* 任务项复选框样式 */
+        .task-checkbox {
+            margin-right: 10px;
+            transform: scale(1.2);
+        }
+        
+        .task-item {
+            display: flex;
+            align-items: center;
+        }
+        
+        .task-content {
+            flex: 1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        /* 文件上传样式 */
+        .file-upload {
+            margin: 10px 0;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .file-label {
+            display: inline-block;
+            padding: 8px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .file-label:hover {
+            background-color: #45a049;
+        }
+        
+        /* 全选复选框样式 */
+        .select-all-container {
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #e8f4fd;
+            border-radius: 4px;
+        }
+        
+        .select-all-checkbox {
+            margin-right: 8px;
+            transform: scale(1.1);
+        }
     </style>
 </head>
 <body>
@@ -214,6 +315,35 @@
             <button type="submit">➕ 添加</button>
         </div>
     </form>
+    
+    <!-- 文件上传区域 -->
+    <div class="file-upload">
+        <label for="importFile" class="file-label">📁 导入任务包</label>
+        <input type="file" id="importFile" class="file-input" accept=".yaml,.yml">
+    </div>
+    
+    <!-- 全选和批量操作控件 -->
+    <div class="select-all-container">
+        <label>
+            <input type="checkbox" id="selectAllCheckbox" class="select-all-checkbox">
+            全选任务
+        </label>
+    </div>
+    
+    <!-- 批量操作控件 -->
+    <div id="batchControls" class="batch-controls">
+        <div>
+            <strong>已选择 <span id="selectedCount">0</span> 个任务</strong>
+        </div>
+        <div class="batch-buttons">
+            <button id="batchDeleteBtn" class="batch-btn batch-delete-btn" disabled>
+                🗑️ 批量删除
+            </button>
+            <button id="batchExportBtn" class="batch-btn batch-export-btn" disabled>
+                📦 导出任务包
+            </button>
+        </div>
+    </div>
     
     <!-- 任务列表容器 -->
     <ul id="taskList"></ul>
@@ -389,17 +519,22 @@
                     
                     return `
                     <li ${style}>
-                        <div>
-                            <span class="${task.completed ? 'completed' : ''}" onclick="toggleTask(${task.id})">
-                                ${task.title}
-                            </span>
-                            ${task.due_date ? `<div class="due-date">到期时间: ${formatDateTime(task.due_date)}</div>` : ''}
-                        </div>
-                        <div class="actions">
-                            <button class="toggle-btn" onclick="toggleTask(${task.id})">
-                                ${task.completed ? '↩️ 撤销' : '✅ 完成'}
-                            </button>
-                            <button class="delete-btn" data-id="${task.id}">🗑️ 删除</button>
+                        <div class="task-item">
+                            <input type="checkbox" class="task-checkbox" data-task-id="${task.id}" onchange="updateBatchControls()">
+                            <div class="task-content">
+                                <div>
+                                    <span class="${task.completed ? 'completed' : ''}" onclick="toggleTask(${task.id})">
+                                        ${task.title}
+                                    </span>
+                                    ${task.due_date ? `<div class="due-date">到期时间: ${formatDateTime(task.due_date)}</div>` : ''}
+                                </div>
+                                <div class="actions">
+                                    <button class="toggle-btn" onclick="toggleTask(${task.id})">
+                                        ${task.completed ? '↩️ 撤销' : '✅ 完成'}
+                                    </button>
+                                    <button class="delete-btn" data-id="${task.id}">🗑️ 删除</button>
+                                </div>
+                            </div>
                         </div>
                     </li>
                 `}).join('');
@@ -550,6 +685,203 @@
             const modal = document.getElementById('deleteModal');
             if (event.target === modal) {
                 hideDeleteConfirm();
+            }
+        });
+        
+        /**
+         * 更新批量操作控件状态
+         */
+        function updateBatchControls() {
+            const checkboxes = document.querySelectorAll('.task-checkbox');
+            const checkedBoxes = document.querySelectorAll('.task-checkbox:checked');
+            const selectedCount = checkedBoxes.length;
+            const totalCount = checkboxes.length;
+            
+            // 更新选中数量显示
+            document.getElementById('selectedCount').textContent = selectedCount;
+            
+            // 显示/隐藏批量操作控件
+            const batchControls = document.getElementById('batchControls');
+            if (selectedCount > 0) {
+                batchControls.classList.add('show');
+            } else {
+                batchControls.classList.remove('show');
+            }
+            
+            // 启用/禁用批量操作按钮
+            const batchDeleteBtn = document.getElementById('batchDeleteBtn');
+            const batchExportBtn = document.getElementById('batchExportBtn');
+            batchDeleteBtn.disabled = selectedCount === 0;
+            batchExportBtn.disabled = selectedCount === 0;
+            
+            // 更新全选复选框状态
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            if (selectedCount === 0) {
+                selectAllCheckbox.indeterminate = false;
+                selectAllCheckbox.checked = false;
+            } else if (selectedCount === totalCount) {
+                selectAllCheckbox.indeterminate = false;
+                selectAllCheckbox.checked = true;
+            } else {
+                selectAllCheckbox.indeterminate = true;
+            }
+        }
+        
+        /**
+         * 全选/取消全选
+         */
+        function toggleSelectAll() {
+            const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+            const checkboxes = document.querySelectorAll('.task-checkbox');
+            
+            checkboxes.forEach(checkbox => {
+                checkbox.checked = selectAllCheckbox.checked;
+            });
+            
+            updateBatchControls();
+        }
+        
+        /**
+         * 获取选中的任务ID列表
+         */
+        function getSelectedTaskIds() {
+            const checkedBoxes = document.querySelectorAll('.task-checkbox:checked');
+            return Array.from(checkedBoxes).map(checkbox => parseInt(checkbox.getAttribute('data-task-id')));
+        }
+        
+        /**
+         * 批量删除任务
+         */
+        async function batchDeleteTasks() {
+            const selectedIds = getSelectedTaskIds();
+            
+            if (selectedIds.length === 0) {
+                alert('请先选择要删除的任务');
+                return;
+            }
+            
+            if (!confirm(`确定要删除选中的 ${selectedIds.length} 个任务吗？`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/tasks/batch-delete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({task_ids: selectedIds})
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert(result.message);
+                    loadTasks();
+                    
+                    // 如果调试面板打开，刷新日志
+                    if (debugPanelOpen) {
+                        loadLogs();
+                    }
+                } else {
+                    const errorData = await response.json();
+                    alert('批量删除失败: ' + errorData.error);
+                }
+            } catch (error) {
+                console.error('批量删除失败:', error);
+                alert('批量删除失败，请重试');
+            }
+        }
+        
+        /**
+         * 导出任务包
+         */
+        async function exportTasks() {
+            const selectedIds = getSelectedTaskIds();
+            
+            if (selectedIds.length === 0) {
+                alert('请先选择要导出的任务');
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/tasks/export', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({task_ids: selectedIds})
+                });
+                
+                if (response.ok) {
+                    // 创建下载链接
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `tasks_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.yaml`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    
+                    alert(`成功导出 ${selectedIds.length} 个任务`);
+                } else {
+                    const errorData = await response.json();
+                    alert('导出失败: ' + errorData.error);
+                }
+            } catch (error) {
+                console.error('导出失败:', error);
+                alert('导出失败，请重试');
+            }
+        }
+        
+        /**
+         * 导入任务包
+         */
+        async function importTasks(file) {
+            if (!file) {
+                alert('请选择要导入的文件');
+                return;
+            }
+            
+            if (!file.name.toLowerCase().endsWith('.yaml') && !file.name.toLowerCase().endsWith('.yml')) {
+                alert('只支持YAML格式文件');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            try {
+                const response = await fetch('/api/tasks/import', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert(`${result.message}，跳过 ${result.skipped_count} 个任务`);
+                    loadTasks();
+                    
+                    // 如果调试面板打开，刷新日志
+                    if (debugPanelOpen) {
+                        loadLogs();
+                    }
+                } else {
+                    const errorData = await response.json();
+                    alert('导入失败: ' + errorData.error);
+                }
+            } catch (error) {
+                console.error('导入失败:', error);
+                alert('导入失败，请重试');
+            }
+        }
+        
+        // 绑定事件监听器
+        document.getElementById('selectAllCheckbox').addEventListener('change', toggleSelectAll);
+        document.getElementById('batchDeleteBtn').addEventListener('click', batchDeleteTasks);
+        document.getElementById('batchExportBtn').addEventListener('click', exportTasks);
+        document.getElementById('importFile').addEventListener('change', function(e) {
+            if (e.target.files.length > 0) {
+                importTasks(e.target.files[0]);
+                // 清空文件输入，允许重复选择同一文件
+                e.target.value = '';
             }
         });
         

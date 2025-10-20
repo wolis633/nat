@@ -5,7 +5,7 @@ nata - not another todo app
 """
 
 import webbrowser
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_file
 import sqlite3
 import os
 import socket
@@ -18,6 +18,8 @@ import subprocess
 import signal
 from collections import deque
 import json
+import yaml
+import tempfile
 
 # 创建一个循环缓冲区来存储最近的日志
 class LogBuffer:
@@ -356,6 +358,226 @@ def get_logs():
     返回最近的日志条目
     """
     return jsonify(log_buffer.get_logs())
+
+# 批量删除任务的API接口
+@app.route('/api/tasks/batch-delete', methods=['POST'])
+def batch_delete_tasks():
+    """
+    批量删除任务
+    请求体应包含JSON格式数据: {"task_ids": [1, 2, 3]}
+    成功删除返回状态码200
+    """
+    data = request.get_json()
+    task_ids = data.get('task_ids', [])
+    
+    app.logger.info(f"尝试批量删除任务: {task_ids}")
+    
+    if not task_ids:
+        app.logger.warning("批量删除失败: 任务ID列表为空")
+        return jsonify({'error': '任务ID列表不能为空'}), 400
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        # 检查任务是否存在
+        placeholders = ','.join(['?' for _ in task_ids])
+        cursor.execute(f'SELECT id FROM tasks WHERE id IN ({placeholders})', task_ids)
+        existing_tasks = [row[0] for row in cursor.fetchall()]
+        
+        if len(existing_tasks) != len(task_ids):
+            missing_ids = set(task_ids) - set(existing_tasks)
+            app.logger.warning(f"批量删除失败: 部分任务不存在 {missing_ids}")
+            return jsonify({'error': f'部分任务不存在: {list(missing_ids)}'}), 404
+        
+        # 批量删除任务
+        cursor.execute(f'DELETE FROM tasks WHERE id IN ({placeholders})', task_ids)
+        conn.commit()
+        conn.close()
+        
+        app.logger.info(f"成功批量删除 {len(task_ids)} 个任务")
+        return jsonify({'message': f'成功删除 {len(task_ids)} 个任务'}), 200
+        
+    except Exception as e:
+        if conn:
+            conn.close()
+        app.logger.error(f'批量删除任务失败: {str(e)}')
+        return jsonify({'error': '批量删除任务失败: ' + str(e)}), 500
+
+# 导出任务包的API接口
+@app.route('/api/tasks/export', methods=['POST'])
+def export_tasks():
+    """
+    导出选中的任务为YAML格式的任务包
+    请求体应包含JSON格式数据: {"task_ids": [1, 2, 3]}
+    返回YAML文件下载
+    """
+    data = request.get_json()
+    task_ids = data.get('task_ids', [])
+    
+    app.logger.info(f"尝试导出任务包: {task_ids}")
+    
+    if not task_ids:
+        app.logger.warning("导出失败: 任务ID列表为空")
+        return jsonify({'error': '任务ID列表不能为空'}), 400
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # 获取选中的任务
+        placeholders = ','.join(['?' for _ in task_ids])
+        cursor.execute(f'SELECT * FROM tasks WHERE id IN ({placeholders})', task_ids)
+        tasks = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        if len(tasks) != len(task_ids):
+            missing_ids = set(task_ids) - set([task['id'] for task in tasks])
+            app.logger.warning(f"导出失败: 部分任务不存在 {missing_ids}")
+            return jsonify({'error': f'部分任务不存在: {list(missing_ids)}'}), 404
+        
+        # 准备导出数据
+        export_data = {
+            'metadata': {
+                'export_time': datetime.now().isoformat(),
+                'total_tasks': len(tasks),
+                'app_name': 'nata - not another todo app',
+                'version': '1.0'
+            },
+            'tasks': []
+        }
+        
+        # 转换任务数据
+        for task in tasks:
+            task_data = {
+                'id': task['id'],
+                'title': task['title'],
+                'completed': bool(task['completed']),
+                'created_at': task['created_at'],
+                'due_date': task['due_date']
+            }
+            export_data['tasks'].append(task_data)
+        
+        # 生成YAML内容
+        yaml_content = yaml.dump(export_data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        
+        # 创建临时文件
+        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8')
+        temp_file.write(yaml_content)
+        temp_file.close()
+        
+        app.logger.info(f"成功导出 {len(tasks)} 个任务到任务包")
+        
+        # 返回文件下载
+        return send_file(
+            temp_file.name,
+            as_attachment=True,
+            download_name=f'tasks_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.yaml',
+            mimetype='application/x-yaml'
+        )
+        
+    except Exception as e:
+        if conn:
+            conn.close()
+        app.logger.error(f'导出任务包失败: {str(e)}')
+        return jsonify({'error': '导出任务包失败: ' + str(e)}), 500
+
+# 导入任务包的API接口
+@app.route('/api/tasks/import', methods=['POST'])
+def import_tasks():
+    """
+    从YAML文件导入任务包
+    请求体应包含multipart/form-data格式的文件
+    成功导入返回状态码201
+    """
+    app.logger.info("尝试导入任务包")
+    
+    if 'file' not in request.files:
+        app.logger.warning("导入失败: 没有上传文件")
+        return jsonify({'error': '没有上传文件'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        app.logger.warning("导入失败: 文件名为空")
+        return jsonify({'error': '文件名为空'}), 400
+    
+    if not file.filename.lower().endswith(('.yaml', '.yml')):
+        app.logger.warning("导入失败: 文件格式不支持")
+        return jsonify({'error': '只支持YAML格式文件'}), 400
+    
+    try:
+        # 读取文件内容
+        file_content = file.read().decode('utf-8')
+        
+        # 解析YAML
+        try:
+            import_data = yaml.safe_load(file_content)
+        except yaml.YAMLError as e:
+            app.logger.error(f"YAML解析失败: {str(e)}")
+            return jsonify({'error': 'YAML文件格式错误: ' + str(e)}), 400
+        
+        # 验证数据结构
+        if not isinstance(import_data, dict) or 'tasks' not in import_data:
+            app.logger.error("导入失败: 任务包格式错误")
+            return jsonify({'error': '任务包格式错误，缺少tasks字段'}), 400
+        
+        tasks = import_data['tasks']
+        if not isinstance(tasks, list):
+            app.logger.error("导入失败: tasks字段不是列表")
+            return jsonify({'error': 'tasks字段必须是列表'}), 400
+        
+        # 导入任务
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        imported_count = 0
+        skipped_count = 0
+        
+        for task_data in tasks:
+            # 验证任务数据
+            if not isinstance(task_data, dict) or 'title' not in task_data:
+                skipped_count += 1
+                continue
+            
+            title = task_data['title'].strip()
+            if not title:
+                skipped_count += 1
+                continue
+            
+            # 检查是否已存在相同标题的任务
+            cursor.execute('SELECT id FROM tasks WHERE title = ?', (title,))
+            if cursor.fetchone():
+                skipped_count += 1
+                continue
+            
+            # 准备任务数据
+            completed = task_data.get('completed', False)
+            due_date = task_data.get('due_date', None)
+            
+            # 插入任务
+            cursor.execute(
+                'INSERT INTO tasks (title, completed, due_date) VALUES (?, ?, ?)',
+                (title, completed, due_date)
+            )
+            imported_count += 1
+        
+        conn.commit()
+        conn.close()
+        
+        app.logger.info(f"成功导入 {imported_count} 个任务，跳过 {skipped_count} 个任务")
+        
+        return jsonify({
+            'message': f'成功导入 {imported_count} 个任务',
+            'imported_count': imported_count,
+            'skipped_count': skipped_count
+        }), 201
+        
+    except Exception as e:
+        app.logger.error(f'导入任务包失败: {str(e)}')
+        return jsonify({'error': '导入任务包失败: ' + str(e)}), 500
 
 # 应用入口点
 if __name__ == '__main__':
